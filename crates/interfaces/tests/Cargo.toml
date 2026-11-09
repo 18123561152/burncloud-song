@@ -1,0 +1,54 @@
+[package]
+license.workspace = true
+name = "burncloud-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+tokio = { workspace = true, features = ["full"] }
+reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+dotenvy = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
+axum = { workspace = true }
+burncloud-common.workspace = true
+burncloud-database.workspace = true
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
+ssh2 = "0.9"
+hmac.workspace = true
+sha1 = "0.10"
+base64.workspace = true
+chrono = { workspace = true }
+
+[[test]]
+name = "local_nodejs_test"
+path = "tests/installer/local_nodejs_test.rs"
+
+[[test]]
+name = "e2e_smoke"
+path = "tests/e2e_smoke.rs"
+
+[[test]]
+name = "logging_test"
+path = "tests/logging_test.rs"
+
+[[test]]
+name = "bundle_fresh_install"
+path = "tests/installer/bundle_fresh_install.rs"
+
+[dev-dependencies]
+burncloud-router.workspace = true
+burncloud-server.workspace = true
+burncloud-identity-user.workspace = true
+# Test-only: the API suite's demo-token fixture needs the default protocol configs, which
+# Supply owns (#842). Runtime supply wiring remains in `burncloud-server`.
+burncloud-supply-channel.workspace = true
+tracing.workspace = true
+log.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

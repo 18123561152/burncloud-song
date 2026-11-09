@@ -1,0 +1,19 @@
+[package]
+name = "burncloud-node-runtime"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+burncloud-supply-model.workspace = true
+tokio.workspace = true

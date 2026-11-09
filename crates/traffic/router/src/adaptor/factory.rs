@@ -1,0 +1,482 @@
+// LLM protocol adaptor — dynamic JSON transformation — Value required; no feasible typed alternative.
+#![allow(
+    clippy::disallowed_types,
+    reason = "protocol/adaptor boundary must preserve arbitrary upstream JSON"
+)]
+
+use async_trait::async_trait;
+use burncloud_database::Database;
+use burncloud_supply_channel::{ChannelProtocolConfig, ChannelProtocolConfigModel};
+use burncloud_supply_contracts::ChannelType;
+use burncloud_traffic_contracts::OpenAIChatRequest;
+use dashmap::DashMap;
+use reqwest::RequestBuilder;
+use serde_json::Value;
+use std::sync::Arc;
+
+/// Trait defining the behavior for a channel adaptor.
+/// This mirrors the structure of New API's channel adapters.
+#[async_trait]
+pub trait ChannelAdaptor: Send + Sync {
+    /// Returns the name of the adaptor (e.g., "OpenAI", "Claude").
+    #[allow(
+        dead_code,
+        reason = "trait method implemented by all adaptors; not called on the `dyn` path yet"
+    )]
+    fn name(&self) -> &'static str;
+
+    /// Converts an OpenAI-compatible request to the vendor-specific request body.
+    /// Returns `None` if the adaptor performs direct passthrough or modifies the request in `build_request` directly.
+    fn convert_request(&self, _request: &OpenAIChatRequest) -> Option<Value> {
+        None
+    }
+
+    /// Converts a vendor-specific response body back to an OpenAI-compatible response body.
+    /// This is used for non-streaming responses.
+    fn convert_response(&self, _response: Value, _model_name: &str) -> Option<Value> {
+        None
+    }
+
+    /// Modifies the HTTP request builder before sending (e.g., setting headers, URL, body).
+    /// This gives adaptors full control over how the request is sent.
+    async fn build_request(
+        &self,
+        client: &reqwest::Client,
+        builder: RequestBuilder,
+        api_key: &str,
+        body: &Value,
+    ) -> RequestBuilder;
+
+    /// Checks if the adaptor supports streaming for the given model/request.
+    #[allow(
+        dead_code,
+        reason = "trait method implemented by all adaptors; not called on the `dyn` path yet"
+    )]
+    fn supports_stream(&self) -> bool {
+        true
+    }
+
+    /// Converts a vendor-specific stream chunk to an OpenAI-compatible SSE event string.
+    /// Returns `None` if the adaptor performs direct passthrough.
+    fn convert_stream_response(&self, _chunk: &str) -> Option<String> {
+        None
+    }
+}
+
+// Implementations will go here or in submodules
+pub(crate) struct OpenAIAdaptor;
+#[async_trait]
+impl ChannelAdaptor for OpenAIAdaptor {
+    fn name(&self) -> &'static str {
+        "OpenAI"
+    }
+    async fn build_request(
+        &self,
+        _client: &reqwest::Client,
+        builder: RequestBuilder,
+        api_key: &str,
+        body: &Value,
+    ) -> RequestBuilder {
+        builder.bearer_auth(api_key).json(body)
+    }
+}
+
+pub(crate) struct AnthropicAdaptor;
+#[async_trait]
+impl ChannelAdaptor for AnthropicAdaptor {
+    fn name(&self) -> &'static str {
+        "Anthropic"
+    }
+    async fn build_request(
+        &self,
+        _client: &reqwest::Client,
+        builder: RequestBuilder,
+        api_key: &str,
+        body: &Value,
+    ) -> RequestBuilder {
+        // Conversion logic should happen before calling this or inside here if we pass OpenAIChatRequest
+        // For now assume body is already converted if convert_request was called
+        builder
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01")
+            .json(body)
+    }
+    fn convert_request(&self, request: &OpenAIChatRequest) -> Option<Value> {
+        Some(crate::adaptor::claude::ClaudeAdaptor::convert_request(
+            request.clone(),
+        ))
+    }
+    fn convert_response(&self, response: Value, model_name: &str) -> Option<Value> {
+        Some(crate::adaptor::claude::ClaudeAdaptor::convert_response(
+            response, model_name,
+        ))
+    }
+}
+
+pub(crate) struct GoogleGeminiAdaptor;
+#[async_trait]
+impl ChannelAdaptor for GoogleGeminiAdaptor {
+    fn name(&self) -> &'static str {
+        "GoogleGemini"
+    }
+    async fn build_request(
+        &self,
+        client: &reqwest::Client,
+        _builder: RequestBuilder,
+        api_key: &str,
+        body: &Value,
+    ) -> RequestBuilder {
+        // Extract model name from body BEFORE conversion (conversion removes it)
+        // Validate model name to prevent URL injection (SSRF): allow only alphanumeric, '-', '.'
+        let model = {
+            let raw = body
+                .get("model")
+                .and_then(|m| m.as_str())
+                .unwrap_or("gemini-2.0-flash");
+            if raw
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '-' || c == '.')
+            {
+                raw
+            } else {
+                tracing::warn!("Invalid Gemini model name '{}', using default", raw);
+                "gemini-2.0-flash"
+            }
+        };
+
+        // Check if streaming is requested (before conversion)
+        let is_stream = body
+            .get("stream")
+            .and_then(|s| s.as_bool())
+            .unwrap_or(false);
+
+        // Convert OpenAI request to Gemini format
+        // The conversion removes non-Gemini fields like 'stream' and 'model'
+        let openai_req: Option<OpenAIChatRequest> = serde_json::from_value(body.clone()).ok();
+        let mut gemini_body = if let Some(req) = openai_req {
+            crate::adaptor::gemini::GeminiAdaptor::convert_request(req)
+        } else {
+            let mut body = body.clone();
+            // Remove 'stream' field if present (Gemini doesn't accept it)
+            if let Some(obj) = body.as_object_mut() {
+                obj.remove("stream");
+            }
+            body
+        };
+
+        // Remove 'stream' from gemini_body if somehow present
+        if let Some(obj) = gemini_body.as_object_mut() {
+            obj.remove("stream");
+        }
+
+        // Construct correct Gemini API URL with the extracted model name
+        let method = if is_stream {
+            "streamGenerateContent"
+        } else {
+            "generateContent"
+        };
+
+        // For streaming, add alt=sse for Server-Sent Events format
+        let url = if is_stream {
+            format!(
+                "https://generativelanguage.googleapis.com/v1beta/models/{}:{}?alt=sse",
+                model, method
+            )
+        } else {
+            format!(
+                "https://generativelanguage.googleapis.com/v1beta/models/{}:{}",
+                model, method
+            )
+        };
+
+        tracing::debug!("GoogleGeminiAdaptor: Building request to URL: {}", url);
+
+        client
+            .post(&url)
+            .header("x-goog-api-key", api_key)
+            .json(&gemini_body)
+    }
+    fn convert_request(&self, request: &OpenAIChatRequest) -> Option<Value> {
+        Some(crate::adaptor::gemini::GeminiAdaptor::convert_request(
+            request.clone(),
+        ))
+    }
+    fn convert_response(&self, response: Value, model_name: &str) -> Option<Value> {
+        Some(crate::adaptor::gemini::GeminiAdaptor::convert_response(
+            response, model_name,
+        ))
+    }
+
+    fn convert_stream_response(&self, chunk: &str) -> Option<String> {
+        crate::adaptor::gemini::GeminiAdaptor::convert_stream_response(chunk)
+    }
+}
+
+/// z.ai Adaptor - Uses Anthropic-compatible protocol with Bearer authentication
+pub(crate) struct ZaiAdaptor;
+
+#[async_trait]
+impl ChannelAdaptor for ZaiAdaptor {
+    fn name(&self) -> &'static str {
+        "Zai"
+    }
+
+    async fn build_request(
+        &self,
+        _client: &reqwest::Client,
+        builder: RequestBuilder,
+        api_key: &str,
+        body: &Value,
+    ) -> RequestBuilder {
+        // z.ai uses Bearer auth (like OpenAI) with Anthropic-compatible body
+        builder.bearer_auth(api_key).json(body)
+    }
+
+    fn convert_request(&self, request: &OpenAIChatRequest) -> Option<Value> {
+        Some(crate::adaptor::zai::ZaiAdaptor::convert_request(
+            request.clone(),
+        ))
+    }
+
+    fn convert_response(&self, response: Value, model_name: &str) -> Option<Value> {
+        Some(crate::adaptor::zai::ZaiAdaptor::convert_response(
+            response, model_name,
+        ))
+    }
+
+    fn convert_stream_response(&self, chunk: &str) -> Option<String> {
+        // Extract model from context if needed, for now use empty string
+        crate::adaptor::zai::ZaiAdaptor::convert_stream_chunk(chunk, "")
+    }
+}
+
+pub(crate) struct AdaptorFactory;
+
+impl AdaptorFactory {
+    pub(crate) fn get_adaptor(channel_type: ChannelType) -> Box<dyn ChannelAdaptor> {
+        match channel_type {
+            ChannelType::OpenAI
+            | ChannelType::Azure
+            | ChannelType::DeepSeek
+            | ChannelType::Moonshot => Box::new(OpenAIAdaptor),
+            // z.ai uses Anthropic-compatible API with Bearer auth
+            ChannelType::Zai => Box::new(ZaiAdaptor),
+            ChannelType::Anthropic => Box::new(AnthropicAdaptor),
+            ChannelType::Gemini => Box::new(GoogleGeminiAdaptor),
+            ChannelType::VertexAi => Box::new(crate::adaptor::vertex::VertexAdaptor::default()),
+            // Add more mappings here
+            _ => Box::new(OpenAIAdaptor), // Default to OpenAI-compatible
+        }
+    }
+}
+
+/// Cache key for dynamic adaptor lookup
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+struct AdaptorCacheKey {
+    channel_type: i32,
+    api_version: String,
+}
+
+/// Factory that supports both static and dynamic adaptors with caching
+pub struct DynamicAdaptorFactory {
+    /// Database connection for loading protocol configs
+    db: Arc<Database>,
+    /// Cache of dynamic adaptors by channel_type + api_version
+    cache: DashMap<AdaptorCacheKey, Arc<dyn ChannelAdaptor>>,
+}
+
+impl DynamicAdaptorFactory {
+    /// Create a new DynamicAdaptorFactory with database connection
+    pub fn new(db: Arc<Database>) -> Self {
+        Self {
+            db,
+            cache: DashMap::new(),
+        }
+    }
+
+    /// Get an adaptor for the given channel type and API version
+    /// Falls back to static adaptors for well-known channel types
+    pub async fn get_adaptor(
+        &self,
+        channel_type: ChannelType,
+        api_version: Option<&str>,
+    ) -> Arc<dyn ChannelAdaptor> {
+        let channel_type_id = channel_type as i32;
+        let api_version = api_version.unwrap_or("default");
+
+        // Check cache first
+        let cache_key = AdaptorCacheKey {
+            channel_type: channel_type_id,
+            api_version: api_version.to_string(),
+        };
+
+        if let Some(adaptor) = self.cache.get(&cache_key) {
+            return Arc::clone(&adaptor);
+        }
+
+        // Try to load dynamic config from database
+        match self
+            .load_dynamic_adaptor(channel_type_id, api_version)
+            .await
+        {
+            Ok(Some(adaptor)) => {
+                self.cache.insert(cache_key, Arc::clone(&adaptor));
+                adaptor
+            }
+            Ok(None) => {
+                // No dynamic config found, use static adaptor
+                Arc::from(AdaptorFactory::get_adaptor(channel_type))
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to load dynamic adaptor: {}, falling back to static",
+                    e
+                );
+                Arc::from(AdaptorFactory::get_adaptor(channel_type))
+            }
+        }
+    }
+
+    /// Get an adaptor using the default API version for the channel type
+    #[allow(
+        dead_code,
+        reason = "public factory entry point for default-version adaptors; callers use the versioned one"
+    )]
+    pub async fn get_default_adaptor(&self, channel_type: ChannelType) -> Arc<dyn ChannelAdaptor> {
+        let channel_type_id = channel_type as i32;
+
+        // Try to get default config from database
+        match self.load_default_adaptor(channel_type_id).await {
+            Ok(Some(adaptor)) => adaptor,
+            Ok(None) => Arc::from(AdaptorFactory::get_adaptor(channel_type)),
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to load default adaptor: {}, falling back to static",
+                    e
+                );
+                Arc::from(AdaptorFactory::get_adaptor(channel_type))
+            }
+        }
+    }
+
+    /// Load a dynamic adaptor from the database
+    async fn load_dynamic_adaptor(
+        &self,
+        channel_type: i32,
+        api_version: &str,
+    ) -> anyhow::Result<Option<Arc<dyn ChannelAdaptor>>> {
+        let config =
+            ChannelProtocolConfigModel::get_by_type_version(&self.db, channel_type, api_version)
+                .await?;
+
+        match config {
+            Some(protocol_config) => {
+                let adaptor = self.create_dynamic_adaptor(protocol_config)?;
+                Ok(Some(adaptor))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Load the default dynamic adaptor for a channel type
+    #[allow(
+        dead_code,
+        reason = "used by `get_default_adaptor`, which has no in-crate caller yet"
+    )]
+    async fn load_default_adaptor(
+        &self,
+        channel_type: i32,
+    ) -> anyhow::Result<Option<Arc<dyn ChannelAdaptor>>> {
+        let config = ChannelProtocolConfigModel::get_default(&self.db, channel_type).await?;
+
+        match config {
+            Some(protocol_config) => {
+                let adaptor = self.create_dynamic_adaptor(protocol_config)?;
+                Ok(Some(adaptor))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Create a DynamicAdaptor from a ProtocolConfig
+    fn create_dynamic_adaptor(
+        &self,
+        config: ChannelProtocolConfig,
+    ) -> anyhow::Result<Arc<dyn ChannelAdaptor>> {
+        // Parse request and response mappings
+        let request_mapping = config
+            .request_mapping
+            .as_ref()
+            .and_then(|json| crate::adaptor::dynamic::DynamicAdaptor::parse_request_mapping(json));
+
+        let response_mapping = config
+            .response_mapping
+            .as_ref()
+            .and_then(|json| crate::adaptor::dynamic::DynamicAdaptor::parse_response_mapping(json));
+
+        let adaptor = crate::adaptor::dynamic::DynamicAdaptor::new(
+            config.channel_type,
+            config.api_version,
+            config.chat_endpoint,
+            config.embed_endpoint,
+            request_mapping,
+            response_mapping,
+        );
+
+        Ok(Arc::new(adaptor))
+    }
+
+    /// Clear the adaptor cache (e.g., when protocol configs are updated)
+    pub fn clear_cache(&self) {
+        self.cache.clear();
+    }
+
+    /// Remove a specific adaptor from the cache
+    #[allow(
+        dead_code,
+        reason = "public cache-invalidation hook for admin/config reload paths"
+    )]
+    pub fn invalidate(&self, channel_type: i32, api_version: &str) {
+        let key = AdaptorCacheKey {
+            channel_type,
+            api_version: api_version.to_string(),
+        };
+        self.cache.remove(&key);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_adaptor() {
+        let adaptor = AdaptorFactory::get_adaptor(ChannelType::VertexAi);
+        assert_eq!(adaptor.name(), "VertexAi");
+
+        let adaptor = AdaptorFactory::get_adaptor(ChannelType::Gemini);
+        assert_eq!(adaptor.name(), "GoogleGemini");
+
+        let adaptor = AdaptorFactory::get_adaptor(ChannelType::OpenAI);
+        assert_eq!(adaptor.name(), "OpenAI");
+    }
+
+    #[test]
+    fn test_adaptor_cache_key() {
+        let key1 = AdaptorCacheKey {
+            channel_type: 1,
+            api_version: "default".to_string(),
+        };
+        let key2 = AdaptorCacheKey {
+            channel_type: 1,
+            api_version: "default".to_string(),
+        };
+        let key3 = AdaptorCacheKey {
+            channel_type: 1,
+            api_version: "2024-02-01".to_string(),
+        };
+
+        assert_eq!(key1, key2);
+        assert_ne!(key1, key3);
+    }
+}

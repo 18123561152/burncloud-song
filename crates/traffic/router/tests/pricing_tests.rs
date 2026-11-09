@@ -1,0 +1,329 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::disallowed_types,
+    clippy::unnecessary_cast,
+    clippy::let_and_return,
+    clippy::redundant_pattern_matching,
+    unused_variables,
+    clippy::panic_in_result_fn,
+    reason = "integration tests: a failed assertion is the intended failure signal, and clippy.toml's allow-panic-in-tests does not recognise #[tokio::test]"
+)]
+
+mod common;
+
+use burncloud_commerce_billing::{BillingPriceModel, PriceInput};
+use burncloud_commerce_contracts::price_u64::dollars_to_nano;
+use common::setup_db;
+
+/// Helper to convert dollars to nanodollars as i64
+fn to_nano(price: f64) -> i64 {
+    dollars_to_nano(price)
+}
+
+/// Helper to convert nanodollars back to dollars
+fn from_nano(nano: i64) -> f64 {
+    nano as f64 / 1_000_000_000.0
+}
+
+/// Test pricing logic: verify cost calculation matches expected formula
+/// Formula: cost = (prompt_tokens * input_price / 1M) + (completion_tokens * output_price / 1M)
+#[tokio::test]
+async fn test_pricing_cost_calculation() -> anyhow::Result<()> {
+    let (_db, _pool, _db_url) = setup_db().await?;
+
+    // Set up pricing for test model
+    // Input: $30/1M tokens, Output: $60/1M tokens (like GPT-4)
+    // All prices are stored as i64 nanodollars
+    let input = PriceInput {
+        model: "test-pricing-model".to_string(),
+        currency: "USD".to_string(),
+        input_price: to_nano(30.0),
+        output_price: to_nano(60.0),
+        cache_read_input_price: None,
+        cache_creation_input_price: None,
+        batch_input_price: None,
+        batch_output_price: None,
+        priority_input_price: None,
+        priority_output_price: None,
+        audio_input_price: None,
+        audio_output_price: None,
+        reasoning_price: None,
+        embedding_price: None,
+        image_price: None,
+        video_price: None,
+        music_price: None,
+        source: Some("test".to_string()),
+        region: Some("international".to_string()),
+        context_window: None,
+        max_output_tokens: None,
+        supports_vision: None,
+        supports_function_calling: None,
+        voices_pricing: None,
+        video_pricing: None,
+        asr_pricing: None,
+        realtime_pricing: None,
+        model_type: None,
+    };
+    BillingPriceModel::upsert(&_db, &input).await?;
+
+    // Get the price and verify
+    let price =
+        BillingPriceModel::get(&_db, "test-pricing-model", "USD", Some("international")).await?;
+    assert!(price.is_some(), "Price should be found");
+
+    let price = price.unwrap_or_else(|| panic!("price should be Some"));
+    assert_eq!(price.input_price, to_nano(30.0));
+    assert_eq!(price.output_price, to_nano(60.0));
+
+    // Calculate cost for 100 prompt + 200 completion tokens
+    // Expected: (100 * 30 / 1_000_000) + (200 * 60 / 1_000_000)
+    //         = 0.003 + 0.012 = 0.015
+    let cost_nano = BillingPriceModel::calculate_cost(&price, 100, 200);
+    let cost = from_nano(cost_nano);
+    let expected_cost = (100.0 / 1_000_000.0) * 30.0 + (200.0 / 1_000_000.0) * 60.0;
+
+    println!("Calculated cost: ${:.6}", cost);
+    println!("Expected cost: ${:.6}", expected_cost);
+
+    assert!(
+        (cost - expected_cost).abs() < 0.000001,
+        "Cost calculation should match"
+    );
+
+    Ok(())
+}
+
+/// Test price listing
+#[tokio::test]
+async fn test_pricing_list() -> anyhow::Result<()> {
+    let (_db, _pool, _db_url) = setup_db().await?;
+
+    // Seed a price so the list is non-empty
+    let seed = PriceInput {
+        model: "list-test-model".to_string(),
+        currency: "USD".to_string(),
+        input_price: to_nano(10.0),
+        output_price: to_nano(20.0),
+        cache_read_input_price: None,
+        cache_creation_input_price: None,
+        batch_input_price: None,
+        batch_output_price: None,
+        priority_input_price: None,
+        priority_output_price: None,
+        audio_input_price: None,
+        audio_output_price: None,
+        reasoning_price: None,
+        embedding_price: None,
+        image_price: None,
+        video_price: None,
+        music_price: None,
+        source: Some("test".to_string()),
+        region: Some("international".to_string()),
+        context_window: None,
+        max_output_tokens: None,
+        supports_vision: None,
+        supports_function_calling: None,
+        voices_pricing: None,
+        video_pricing: None,
+        asr_pricing: None,
+        realtime_pricing: None,
+        model_type: None,
+    };
+    BillingPriceModel::upsert(&_db, &seed).await?;
+
+    let prices = BillingPriceModel::list(&_db, 100, 0, None, None).await?;
+
+    println!("Found {} prices", prices.len());
+
+    // Should have at least the price we just seeded
+    assert!(!prices.is_empty(), "Should have some prices");
+
+    // Print all prices for debugging
+    for price in &prices {
+        println!(
+            "  {} -> ${:.4}/1M input, ${:.4}/1M output (region: {:?})",
+            price.model,
+            from_nano(price.input_price),
+            from_nano(price.output_price),
+            price.region
+        );
+    }
+
+    Ok(())
+}
+
+/// Test price delete and recreate
+#[tokio::test]
+async fn test_pricing_delete_and_recreate() -> anyhow::Result<()> {
+    let (_db, _pool, _db_url) = setup_db().await?;
+
+    // Create a test model
+    let input = PriceInput {
+        model: "test-delete-model".to_string(),
+        currency: "USD".to_string(),
+        input_price: to_nano(10.0),
+        output_price: to_nano(20.0),
+        cache_read_input_price: None,
+        cache_creation_input_price: None,
+        batch_input_price: None,
+        batch_output_price: None,
+        priority_input_price: None,
+        priority_output_price: None,
+        audio_input_price: None,
+        audio_output_price: None,
+        reasoning_price: None,
+        embedding_price: None,
+        image_price: None,
+        video_price: None,
+        music_price: None,
+        source: Some("test".to_string()),
+        region: Some("international".to_string()),
+        context_window: None,
+        max_output_tokens: None,
+        supports_vision: None,
+        supports_function_calling: None,
+        voices_pricing: None,
+        video_pricing: None,
+        asr_pricing: None,
+        realtime_pricing: None,
+        model_type: None,
+    };
+    BillingPriceModel::upsert(&_db, &input).await?;
+
+    // Verify it exists
+    let price =
+        BillingPriceModel::get(&_db, "test-delete-model", "USD", Some("international")).await?;
+    assert!(price.is_some());
+
+    // Delete it
+    BillingPriceModel::delete(&_db, "test-delete-model", "USD", Some("international")).await?;
+
+    // Verify it's gone
+    let price =
+        BillingPriceModel::get(&_db, "test-delete-model", "USD", Some("international")).await?;
+    assert!(price.is_none());
+
+    // Recreate with different price
+    let input2 = PriceInput {
+        model: "test-delete-model".to_string(),
+        currency: "USD".to_string(),
+        input_price: to_nano(50.0),
+        output_price: to_nano(100.0),
+        cache_read_input_price: None,
+        cache_creation_input_price: None,
+        batch_input_price: None,
+        batch_output_price: None,
+        priority_input_price: None,
+        priority_output_price: None,
+        audio_input_price: None,
+        audio_output_price: None,
+        reasoning_price: None,
+        embedding_price: None,
+        image_price: None,
+        video_price: None,
+        music_price: None,
+        source: Some("test".to_string()),
+        region: Some("international".to_string()),
+        context_window: None,
+        max_output_tokens: None,
+        supports_vision: None,
+        supports_function_calling: None,
+        voices_pricing: None,
+        video_pricing: None,
+        asr_pricing: None,
+        realtime_pricing: None,
+        model_type: None,
+    };
+    BillingPriceModel::upsert(&_db, &input2).await?;
+
+    // Verify new price
+    let price =
+        BillingPriceModel::get(&_db, "test-delete-model", "USD", Some("international")).await?;
+    assert!(price.is_some());
+    let price = price.unwrap_or_else(|| panic!("price should be Some"));
+    assert_eq!(price.input_price, to_nano(50.0));
+    assert_eq!(price.output_price, to_nano(100.0));
+
+    Ok(())
+}
+
+/// Regression test: upsert idempotency
+/// Inserting the same model twice must not create duplicate rows.
+/// The second upsert should overwrite the first.
+#[tokio::test]
+async fn test_upsert_idempotency() -> anyhow::Result<()> {
+    let (db, _pool, _db_url) = setup_db().await?;
+
+    let input = PriceInput {
+        model: "idempotency-test-model".to_string(),
+        currency: "USD".to_string(),
+        input_price: to_nano(5.0),
+        output_price: to_nano(15.0),
+        cache_read_input_price: None,
+        cache_creation_input_price: None,
+        batch_input_price: None,
+        batch_output_price: None,
+        priority_input_price: None,
+        priority_output_price: None,
+        audio_input_price: None,
+        audio_output_price: None,
+        reasoning_price: None,
+        embedding_price: None,
+        image_price: None,
+        video_price: None,
+        music_price: None,
+        source: Some("test".to_string()),
+        region: None,
+        context_window: None,
+        max_output_tokens: None,
+        supports_vision: None,
+        supports_function_calling: None,
+        voices_pricing: None,
+        video_pricing: None,
+        asr_pricing: None,
+        realtime_pricing: None,
+        model_type: None,
+    };
+
+    // Insert first time
+    BillingPriceModel::upsert(&db, &input).await?;
+
+    // Insert second time with updated prices
+    let input2 = PriceInput {
+        input_price: to_nano(6.0),
+        output_price: to_nano(18.0),
+        ..input
+    };
+    BillingPriceModel::upsert(&db, &input2).await?;
+
+    // Exactly one row should exist
+    let all = BillingPriceModel::list(&db, i32::MAX, 0, None, None).await?;
+    let matching: Vec<_> = all
+        .iter()
+        .filter(|p| p.model == "idempotency-test-model")
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "Expected exactly 1 row, got {}",
+        matching.len()
+    );
+
+    // Price should reflect the second upsert
+    let price = BillingPriceModel::get(&db, "idempotency-test-model", "USD", None).await?;
+    assert!(price.is_some());
+    let price = price.unwrap_or_else(|| panic!("price should be Some"));
+    assert_eq!(
+        price.input_price,
+        to_nano(6.0),
+        "input_price should be from second upsert"
+    );
+    assert_eq!(
+        price.output_price,
+        to_nano(18.0),
+        "output_price should be from second upsert"
+    );
+
+    Ok(())
+}

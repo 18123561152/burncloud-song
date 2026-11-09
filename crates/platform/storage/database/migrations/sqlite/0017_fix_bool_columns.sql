@@ -1,0 +1,3 @@
+-- SQLite migration 0017 is implemented in Rust: migration/sqlite_0017.rs
+-- Ensures channel_protocol_configs / channel_abilities exist and converts
+-- legacy BOOLEAN columns to INTEGER when needed.

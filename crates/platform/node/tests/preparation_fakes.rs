@@ -1,0 +1,51 @@
+use burncloud_node_runtime::{
+    ArtifactPreparer, ArtifactRequest, ArtifactSource, Digest, FakeArtifactPreparer,
+    FakeHealthProbe, FakeReadinessProbe, FakeRuntimePreparer, HealthProbe, ReadinessProbe,
+    ReadinessTarget, RuntimePreparer, RuntimeRequest,
+};
+
+#[tokio::test]
+async fn fake_artifact_preparer_returns_verified_local_artifact() {
+    let artifact = FakeArtifactPreparer
+        .prepare(ArtifactRequest::new(
+            ArtifactSource::parse("models/qwen-4b.gguf").unwrap(),
+            Some(
+                Digest::parse(
+                    "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                )
+                .unwrap(),
+            ),
+        ))
+        .await
+        .unwrap();
+
+    assert!(artifact.is_verified());
+    assert!(artifact.local_path().is_absolute());
+    assert!(artifact
+        .local_path()
+        .to_string_lossy()
+        .contains("burncloud"));
+}
+
+#[tokio::test]
+async fn fake_runtime_preparer_returns_fake_llama_cpp_executable() {
+    let runtime = FakeRuntimePreparer
+        .prepare(RuntimeRequest {
+            runtime: "llama.cpp".into(),
+            version: Some("fake-v0".into()),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(runtime.executable, "/fake/runtime/llama.cpp/server");
+}
+
+#[tokio::test]
+async fn fake_readiness_and_health_are_explicit_ports() {
+    let target = ReadinessTarget {
+        endpoint: "http://127.0.0.1:39122/health".into(),
+    };
+
+    FakeReadinessProbe.wait_ready(target.clone()).await.unwrap();
+    assert!(FakeHealthProbe.is_healthy(target).await.unwrap());
+}

@@ -1,0 +1,50 @@
+[package]
+publish.workspace = true
+name = "burncloud-server"
+version = "0.1.9"
+edition = "2021"
+description = "Server component for the BurnCloud platform"
+license = "MIT"
+repository = "https://github.com/burncloud/burncloud"
+homepage = "https://github.com/burncloud/burncloud"
+authors = ["burncloud contributors"]
+keywords = ["burncloud", "server", "api"]
+categories = ["web-programming"]
+
+[dependencies]
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+tracing-log.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+axum = { workspace = true, features = ["macros"] }
+tower-http = { workspace = true, features = ["cors", "trace", "request-id"] }
+tower = { version = "0.5", features = ["util"] }
+burncloud-database = { workspace = true }
+burncloud-common = { workspace = true }
+burncloud-identity-user = { workspace = true }
+burncloud-node-runtime = { workspace = true }
+burncloud-router = { workspace = true }
+burncloud-supply-model = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
+burncloud-client = { workspace = true, features = ["liveview"] }
+burncloud-service-monitor = { workspace = true }
+burncloud-identity-token = { workspace = true }
+burncloud-supply-channel = { workspace = true }
+jsonwebtoken = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
+chrono = { workspace = true }
+dirs = { workspace = true }
+sha2.workspace = true
+futures-util.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

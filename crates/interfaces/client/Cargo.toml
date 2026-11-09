@@ -1,0 +1,43 @@
+[package]
+publish.workspace = true
+name = "burncloud-client"
+version = "0.2.0"
+edition = "2021"
+description = "Dioxus client for the BurnCloud AI routing platform"
+license = "MIT"
+repository = "https://github.com/burncloud/burncloud"
+authors = ["burncloud contributors"]
+
+[features]
+default = ["desktop"]
+desktop = ["dioxus/desktop", "dioxus/launch"]
+web = ["dioxus/web", "dioxus/launch"]
+liveview = ["dep:dioxus-liveview", "dep:axum", "dep:burncloud-database"]
+
+[dependencies]
+burncloud-common.workspace = true
+dioxus = { workspace = true, features = ["router", "lib"] }
+dioxus-router.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+dirs.workspace = true
+sha2.workspace = true
+rand.workspace = true
+tracing.workspace = true
+
+# LiveView integration used by the BurnCloud server binary.
+dioxus-liveview = { workspace = true, optional = true }
+axum = { workspace = true, optional = true }
+burncloud-database = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[build-dependencies]
+winres.workspace = true
+
+[lints]
+workspace = true

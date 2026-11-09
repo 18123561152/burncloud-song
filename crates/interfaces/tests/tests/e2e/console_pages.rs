@@ -1,0 +1,185 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::disallowed_types,
+    clippy::let_unit_value,
+    clippy::redundant_pattern,
+    clippy::manual_is_multiple_of,
+    clippy::let_and_return,
+    clippy::to_string_trait_impl,
+    clippy::to_string_in_format_args,
+    clippy::redundant_pattern_matching,
+    reason = "e2e browser tests: unwrap/expect are the intended failure signal and these pedantic lints add no value in ignored, manually-run UI tests"
+)]
+use super::*;
+
+#[tokio::test]
+#[ignore = "requires external infrastructure (browser/running server)"]
+async fn test_dashboard_loads() {
+    let _ = setup_browser().expect("agent-browser required");
+    let base_url = common::spawn_app().await;
+    let (mut browser, _) = login_as_admin(&base_url).await;
+    // Already on dashboard after login, verify page loaded
+    // Use sidebar link or table data as fallback (heading may have rendering delay)
+    browser
+        .wait_for_text("企业控制台", 20_000)
+        .or_else(|_| browser.wait_for_text("仪表盘", 5_000))
+        .or_else(|_| browser.wait_for_text("gpt-4o-mini", 5_000))
+        .expect("Dashboard page did not load (no heading, sidebar, or table data found)");
+    browser.screenshot("console-dashboard").ok();
+}
+
+#[tokio::test]
+#[ignore = "requires external infrastructure (browser/running server)"]
+async fn test_models_page_loads() {
+    let _ = setup_browser().expect("agent-browser required");
+    let base_url = common::spawn_app().await;
+    let (mut browser, _) = login_browser(&base_url).await;
+    browser
+        .open("/console/models")
+        .expect("Failed to open models");
+    browser
+        .wait_for_text("模型网络", 10_000)
+        .expect("Models page did not load");
+    browser.screenshot("console-models").ok();
+}
+
+#[tokio::test]
+#[ignore = "requires external infrastructure (browser/running server)"]
+async fn test_access_page_loads() {
+    let _ = setup_browser().expect("agent-browser required");
+    let base_url = common::spawn_app().await;
+    let (mut browser, _) = login_browser(&base_url).await;
+    browser
+        .open("/console/access")
+        .expect("Failed to open access");
+    browser
+        .wait_for_text("访问凭证", 10_000)
+        .expect("Access page did not load");
+    browser.screenshot("console-access").ok();
+}
+
+#[tokio::test]
+#[ignore = "requires external infrastructure (browser/running server)"]
+async fn test_deploy_page_loads() {
+    let _ = setup_browser().expect("agent-browser required");
+    let base_url = common::spawn_app().await;
+    let (mut browser, _) = login_browser(&base_url).await;
+    browser
+        .open("/console/deploy")
+        .expect("Failed to open deploy");
+    browser
+        .wait_for_text("Model Deployment", 10_000)
+        .expect("Deploy page did not load");
+    browser.screenshot("console-deploy").ok();
+}
+
+#[tokio::test]
+#[ignore = "requires external infrastructure (browser/running server)"]
+async fn test_monitor_page_loads() {
+    let _ = setup_browser().expect("agent-browser required");
+    let base_url = common::spawn_app().await;
+    let (mut browser, _) = login_browser(&base_url).await;
+    browser
+        .open("/console/monitor")
+        .expect("Failed to open monitor");
+    browser
+        .wait_for_text("风控雷达", 10_000)
+        .expect("Monitor page did not load");
+    browser.screenshot("console-monitor").ok();
+}
+
+#[tokio::test]
+#[ignore = "requires external infrastructure (browser/running server)"]
+async fn test_logs_page_loads() {
+    let _ = setup_browser().expect("agent-browser required");
+    let base_url = common::spawn_app().await;
+    let (mut browser, _) = login_as_admin(&base_url).await;
+    browser.open("/console/logs").expect("Failed to open logs");
+    // Use sidebar link as fallback (heading may have rendering delay)
+    browser
+        .wait_for_text("Logs", 20_000)
+        .or_else(|_| browser.wait_for_text("日志审查", 5_000))
+        .expect("Logs page did not load");
+    browser.screenshot("console-logs").ok();
+}
+
+#[tokio::test]
+#[ignore = "requires external infrastructure (browser/running server)"]
+async fn test_users_page_loads() {
+    let _ = setup_browser().expect("agent-browser required");
+    let base_url = common::spawn_app().await;
+    let (mut browser, _) = login_as_admin(&base_url).await;
+    browser
+        .open("/console/users")
+        .expect("Failed to open users");
+    // Use sidebar link as fallback (heading may have rendering delay)
+    // Note: Modal auto-opening bug may block main content (Dioxus LiveView issue)
+    browser
+        .wait_for_text("客户列表", 20_000)
+        .or_else(|_| browser.wait_for_text("用户管理", 5_000))
+        .expect("Users page did not load");
+    browser.screenshot("console-users").ok();
+}
+
+#[tokio::test]
+#[ignore = "requires external infrastructure (browser/running server)"]
+async fn test_settings_page_loads() {
+    let _ = setup_browser().expect("agent-browser required");
+    let base_url = common::spawn_app().await;
+    let (mut browser, _) = login_browser(&base_url).await;
+    browser
+        .open("/console/settings")
+        .expect("Failed to open settings");
+    browser
+        .wait_for_text("系统设置", 10_000)
+        .expect("Settings page did not load");
+    browser.screenshot("console-settings").ok();
+}
+
+#[tokio::test]
+#[ignore = "requires external infrastructure (browser/running server)"]
+async fn test_billing_page_loads() {
+    let _ = setup_browser().expect("agent-browser required");
+    let base_url = common::spawn_app().await;
+    let (mut browser, _) = login_browser(&base_url).await;
+    browser
+        .open("/console/finance")
+        .expect("Failed to open finance");
+    browser
+        .wait_for_text("财务中心", 10_000)
+        .expect("Finance page did not load");
+    browser.screenshot("console-finance").ok();
+}
+
+#[tokio::test]
+#[ignore = "requires external infrastructure (browser/running server)"]
+async fn test_connect_page_loads() {
+    let _ = setup_browser().expect("agent-browser required");
+    let base_url = common::spawn_app().await;
+    let (mut browser, _) = login_browser(&base_url).await;
+    browser
+        .open("/console/connect")
+        .expect("Failed to open connect");
+    browser
+        .wait_for_text("算力互联", 10_000)
+        .expect("Connect page did not load");
+    browser.screenshot("console-connect").ok();
+}
+
+#[tokio::test]
+#[ignore = "requires external infrastructure (browser/running server)"]
+async fn test_playground_page_loads() {
+    let _ = setup_browser().expect("agent-browser required");
+    let base_url = common::spawn_app().await;
+    let (mut browser, _) = login_as_admin(&base_url).await;
+    browser
+        .open("/console/playground")
+        .expect("Failed to open playground");
+    // Use sidebar link as fallback (heading may have rendering delay)
+    browser
+        .wait_for_text("Playground", 20_000)
+        .or_else(|_| browser.wait_for_text("演练场", 5_000))
+        .expect("Playground page did not load");
+    browser.screenshot("console-playground").ok();
+}

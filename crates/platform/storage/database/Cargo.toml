@@ -1,0 +1,45 @@
+[package]
+publish.workspace = true
+name = "burncloud-database"
+version = "0.1.0"
+edition = "2021"
+authors = ["BurnCloud Team <team@burncloud.com>"]
+description = "Core database abstractions and traits for BurnCloud AI management system"
+documentation = "https://docs.rs/burncloud-database"
+homepage = "https://github.com/burncloud/burncloud-database"
+repository = "https://github.com/burncloud/burncloud-database"
+license = "MIT OR Apache-2.0"
+keywords = ["database", "ai", "model-management", "burncloud", "async"]
+categories = ["database", "api-bindings", "development-tools"]
+readme = "README.md"
+
+[dependencies]
+sqlx = { workspace = true, features = ["postgres", "sqlite"] }
+tokio.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+dirs.workspace = true
+tracing.workspace = true
+
+# NOTE (#842): this crate deliberately does not depend on `burncloud-identity-user` or
+# `burncloud-supply-channel`, not even as a dev-dependency. `deny.toml` bans
+# `burncloud-supply-channel` from `burncloud-database`, and that ban is exactly the one-way
+# dependency direction #842 requires: Platform must not name the domain owners. The
+# owner-seeded bootstrap contract is therefore asserted in
+# `crates/interfaces/server/tests/owner_seed_contract.rs`, because `burncloud-server` is on
+# the ban's wrapper allow-list, while Platform's own half of the contract (the factories create
+# no domain records) is asserted in `tests/initialization_boundary.rs`.
+[dev-dependencies]
+tempfile.workspace = true
+
+[[example]]
+name = "database-basic-usage"
+path = "examples/basic_usage.rs"
+
+[[example]]
+name = "default_location"
+path = "examples/default_location.rs"
+
+[lints]
+workspace = true
